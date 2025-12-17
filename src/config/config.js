@@ -6,12 +6,60 @@ import log from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const envPath = path.join(__dirname, '../../.env');
-const configJsonPath = path.join(__dirname, '../../config.json');
+
+// 检测是否在 pkg 打包环境中运行
+const isPkg = typeof process.pkg !== 'undefined';
+
+// 获取配置文件路径
+// pkg 环境下使用可执行文件所在目录或当前工作目录
+function getConfigPaths() {
+  if (isPkg) {
+    // pkg 环境：优先使用可执行文件旁边的配置文件
+    const exeDir = path.dirname(process.execPath);
+    const cwdDir = process.cwd();
+    
+    // 查找 .env 文件
+    let envPath = path.join(exeDir, '.env');
+    if (!fs.existsSync(envPath)) {
+      const cwdEnvPath = path.join(cwdDir, '.env');
+      if (fs.existsSync(cwdEnvPath)) {
+        envPath = cwdEnvPath;
+      }
+    }
+    
+    // 查找 config.json 文件
+    let configJsonPath = path.join(exeDir, 'config.json');
+    if (!fs.existsSync(configJsonPath)) {
+      const cwdConfigPath = path.join(cwdDir, 'config.json');
+      if (fs.existsSync(cwdConfigPath)) {
+        configJsonPath = cwdConfigPath;
+      }
+    }
+    
+    // 查找 .env.example 文件
+    let examplePath = path.join(exeDir, '.env.example');
+    if (!fs.existsSync(examplePath)) {
+      const cwdExamplePath = path.join(cwdDir, '.env.example');
+      if (fs.existsSync(cwdExamplePath)) {
+        examplePath = cwdExamplePath;
+      }
+    }
+    
+    return { envPath, configJsonPath, examplePath };
+  }
+  
+  // 开发环境
+  return {
+    envPath: path.join(__dirname, '../../.env'),
+    configJsonPath: path.join(__dirname, '../../config.json'),
+    examplePath: path.join(__dirname, '../../.env.example')
+  };
+}
+
+const { envPath, configJsonPath, examplePath } = getConfigPaths();
 
 // 确保 .env 存在
 if (!fs.existsSync(envPath)) {
-  const examplePath = path.join(__dirname, '../../.env.example');
   if (fs.existsSync(examplePath)) {
     fs.copyFileSync(examplePath, envPath);
     log.info('✓ 已从 .env.example 创建 .env 文件');
@@ -24,8 +72,8 @@ if (fs.existsSync(configJsonPath)) {
   jsonConfig = JSON.parse(fs.readFileSync(configJsonPath, 'utf8'));
 }
 
-// 加载 .env
-dotenv.config();
+// 加载 .env（指定路径）
+dotenv.config({ path: envPath });
 
 // 获取代理配置：优先使用 PROXY，其次使用系统代理环境变量
 export function getProxyConfig() {

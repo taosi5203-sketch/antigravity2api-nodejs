@@ -6,6 +6,9 @@ import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// 检测是否在 pkg 打包环境中运行
+const isPkg = typeof process.pkg !== 'undefined';
+
 // 缓冲区大小警告阈值（不限制，只警告）
 const BUFFER_WARNING_SIZE = 50 * 1024 * 1024; // 50MB 警告
 
@@ -32,12 +35,46 @@ class antigravityRequester {
             filename = 'antigravity_requester_android_arm64';
         } else if (platform === 'linux' && arch === "x64") {
             filename = 'antigravity_requester_linux_amd64';
+        } else if (platform === 'linux' && arch === "arm64") {
+            // Linux ARM64 (Termux, Raspberry Pi, etc.)
+            filename = 'antigravity_requester_android_arm64';
         } else {
             throw new Error(`Unsupported platform: ${platform}+${arch}`);
         }
         
-        const binPath = this.binPath || path.join(__dirname, 'bin');
+        // 获取 bin 目录路径
+        // pkg 环境下优先使用可执行文件旁边的 bin 目录
+        let binPath = this.binPath;
+        if (!binPath) {
+            if (isPkg) {
+                // pkg 环境：优先使用可执行文件旁边的 bin 目录
+                const exeDir = path.dirname(process.execPath);
+                const exeBinDir = path.join(exeDir, 'bin');
+                if (fs.existsSync(exeBinDir)) {
+                    binPath = exeBinDir;
+                } else {
+                    // 其次使用当前工作目录的 bin 目录
+                    const cwdBinDir = path.join(process.cwd(), 'bin');
+                    if (fs.existsSync(cwdBinDir)) {
+                        binPath = cwdBinDir;
+                    } else {
+                        // 最后使用打包内的 bin 目录
+                        binPath = path.join(__dirname, 'bin');
+                    }
+                }
+            } else {
+                // 开发环境
+                binPath = path.join(__dirname, 'bin');
+            }
+        }
+        
         const requester_execPath = path.join(binPath, filename);
+        
+        // 检查文件是否存在
+        if (!fs.existsSync(requester_execPath)) {
+            console.warn(`Binary not found at: ${requester_execPath}`);
+        }
+        
         // 设置执行权限（非Windows平台）
         if (platform !== 'win32') {
             try {

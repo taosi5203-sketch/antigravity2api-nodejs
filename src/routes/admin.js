@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import { generateToken, authMiddleware } from '../auth/jwt.js';
 import tokenManager from '../auth/token_manager.js';
 import quotaManager from '../auth/quota_manager.js';
@@ -16,7 +17,33 @@ import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const envPath = path.join(__dirname, '../../.env');
+
+// 检测是否在 pkg 打包环境中运行
+const isPkg = typeof process.pkg !== 'undefined';
+
+// 获取 .env 文件路径
+// pkg 环境下使用可执行文件所在目录或当前工作目录
+function getEnvPath() {
+  if (isPkg) {
+    // pkg 环境：优先使用可执行文件旁边的 .env
+    const exeDir = path.dirname(process.execPath);
+    const exeEnvPath = path.join(exeDir, '.env');
+    if (fs.existsSync(exeEnvPath)) {
+      return exeEnvPath;
+    }
+    // 其次使用当前工作目录的 .env
+    const cwdEnvPath = path.join(process.cwd(), '.env');
+    if (fs.existsSync(cwdEnvPath)) {
+      return cwdEnvPath;
+    }
+    // 返回可执行文件目录的路径（即使不存在）
+    return exeEnvPath;
+  }
+  // 开发环境
+  return path.join(__dirname, '../../.env');
+}
+
+const envPath = getEnvPath();
 
 const router = express.Router();
 

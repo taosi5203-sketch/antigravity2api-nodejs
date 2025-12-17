@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { generateAssistantResponse, generateAssistantResponseNoStream, getAvailableModels, generateImageForSD, closeRequester } from '../api/client.js';
 import { generateRequestBody, prepareImageRequest } from '../utils/utils.js';
@@ -13,6 +14,51 @@ import memoryManager, { MemoryPressure, registerMemoryPoolCleanup } from '../uti
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// 检测是否在 pkg 打包环境中运行
+const isPkg = typeof process.pkg !== 'undefined';
+
+// 获取静态文件目录
+// pkg 环境下使用可执行文件所在目录的 public 文件夹
+// 开发环境下使用项目根目录的 public 文件夹
+function getPublicDir() {
+  if (isPkg) {
+    // pkg 环境：优先使用可执行文件旁边的 public 目录
+    const exeDir = path.dirname(process.execPath);
+    const exePublicDir = path.join(exeDir, 'public');
+    if (fs.existsSync(exePublicDir)) {
+      return exePublicDir;
+    }
+    // 其次使用当前工作目录的 public 目录
+    const cwdPublicDir = path.join(process.cwd(), 'public');
+    if (fs.existsSync(cwdPublicDir)) {
+      return cwdPublicDir;
+    }
+    // 最后使用打包内的 public 目录（通过 snapshot）
+    return path.join(__dirname, '../../public');
+  }
+  // 开发环境
+  return path.join(__dirname, '../../public');
+}
+
+const publicDir = getPublicDir();
+
+// 计算相对路径用于日志显示
+function getRelativePath(absolutePath) {
+  if (isPkg) {
+    const exeDir = path.dirname(process.execPath);
+    if (absolutePath.startsWith(exeDir)) {
+      return '.' + absolutePath.slice(exeDir.length).replace(/\\/g, '/');
+    }
+    const cwdDir = process.cwd();
+    if (absolutePath.startsWith(cwdDir)) {
+      return '.' + absolutePath.slice(cwdDir.length).replace(/\\/g, '/');
+    }
+  }
+  return absolutePath;
+}
+
+logger.info(`静态文件目录: ${getRelativePath(publicDir)}`);
 
 const app = express();
 
@@ -160,8 +206,8 @@ app.use(cors());
 app.use(express.json({ limit: config.security.maxRequestSize }));
 
 // 静态文件服务
-app.use('/images', express.static(path.join(__dirname, '../../public/images')));
-app.use(express.static(path.join(__dirname, '../../public')));
+app.use('/images', express.static(path.join(publicDir, 'images')));
+app.use(express.static(publicDir));
 
 // 管理路由
 app.use('/admin', adminRouter);

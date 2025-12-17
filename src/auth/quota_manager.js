@@ -7,8 +7,20 @@ import memoryManager, { MemoryPressure } from '../utils/memoryManager.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 获取数据目录（支持 pkg 打包环境）
+function getDataDir() {
+  // 检测是否在 pkg 打包环境中运行
+  if (process.pkg) {
+    // pkg 环境：使用可执行文件所在目录的 data 子目录
+    const execDir = path.dirname(process.execPath);
+    return path.join(execDir, 'data');
+  }
+  // 普通环境：使用项目根目录的 data 子目录
+  return path.join(__dirname, '..', '..', 'data');
+}
+
 class QuotaManager {
-  constructor(filePath = path.join(__dirname, '..', '..', 'data', 'quotas.json')) {
+  constructor(filePath = path.join(getDataDir(), 'quotas.json')) {
     this.filePath = filePath;
     this.cache = new Map();
     this.CACHE_TTL = 5 * 60 * 1000; // 5分钟缓存
