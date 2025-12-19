@@ -70,7 +70,7 @@ export function buildConfig(jsonConfig) {
       port: jsonConfig.server?.port || DEFAULT_SERVER_PORT,
       host: jsonConfig.server?.host || DEFAULT_SERVER_HOST,
       heartbeatInterval: jsonConfig.server?.heartbeatInterval || DEFAULT_HEARTBEAT_INTERVAL,
-      memoryThreshold: jsonConfig.server?.memoryThreshold || 500
+      memoryThreshold: jsonConfig.server?.memoryThreshold || 100
     },
     cache: {
       modelListTTL: jsonConfig.cache?.modelListTTL || MODEL_LIST_CACHE_TTL

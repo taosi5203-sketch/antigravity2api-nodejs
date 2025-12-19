@@ -1,9 +1,21 @@
 // OpenAI 格式转换工具
 import config from '../../config/config.js';
-import { generateRequestId } from '../idGenerator.js';
-import { getReasoningSignature, getToolSignature } from '../thoughtSignatureCache.js';
-import { setToolNameMapping } from '../toolNameCache.js';
-import { getThoughtSignatureForModel, getToolSignatureForModel, sanitizeToolName, cleanParameters, modelMapping, isEnableThinking, generateGenerationConfig, extractSystemInstruction } from '../utils.js';
+import { extractSystemInstruction } from '../utils.js';
+import { convertOpenAIToolsToAntigravity } from '../toolConverter.js';
+import {
+  getSignatureContext,
+  pushUserMessage,
+  findFunctionNameById,
+  pushFunctionResponse,
+  createThoughtPart,
+  createFunctionCallPart,
+  processToolName,
+  pushModelMessage,
+  buildRequestBody,
+  modelMapping,
+  isEnableThinking,
+  generateGenerationConfig
+} from './common.js';
 
 function extractImagesFromContent(content) {
   const result = { text: '', images: [] };
@@ -32,86 +44,33 @@ function extractImagesFromContent(content) {
   return result;
 }
 
-function handleUserMessage(extracted, antigravityMessages) {
-  antigravityMessages.push({
-    role: 'user',
-    parts: [{ text: extracted.text }, ...extracted.images]
-  });
-}
-
 function handleAssistantMessage(message, antigravityMessages, enableThinking, actualModelName, sessionId) {
-  const lastMessage = antigravityMessages[antigravityMessages.length - 1];
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
   const hasContent = message.content && message.content.trim() !== '';
+  const { reasoningSignature, toolSignature } = getSignatureContext(sessionId, actualModelName);
 
-  const antigravityTools = hasToolCalls
+  const toolCalls = hasToolCalls
     ? message.tool_calls.map(toolCall => {
-        const originalName = toolCall.function.name;
-        const safeName = sanitizeToolName(originalName);
-        const part = {
-          functionCall: {
-            id: toolCall.id,
-            name: safeName,
-            args: { query: toolCall.function.arguments }
-          }
-        };
-        if (sessionId && actualModelName && safeName !== originalName) {
-          setToolNameMapping(sessionId, actualModelName, safeName, originalName);
-        }
-        if (enableThinking) {
-          const cachedToolSig = getToolSignature(sessionId, actualModelName);
-          part.thoughtSignature = toolCall.thoughtSignature || cachedToolSig || getToolSignatureForModel(actualModelName);
-        }
-        return part;
+        const safeName = processToolName(toolCall.function.name, sessionId, actualModelName);
+        const signature = enableThinking ? (toolCall.thoughtSignature || toolSignature) : null;
+        return createFunctionCallPart(toolCall.id, safeName, toolCall.function.arguments, signature);
       })
     : [];
 
-  if (lastMessage?.role === 'model' && hasToolCalls && !hasContent) {
-    lastMessage.parts.push(...antigravityTools);
-  } else {
-    const parts = [];
-    if (enableThinking) {
-      const cachedSig = getReasoningSignature(sessionId, actualModelName);
-      const thoughtSignature = message.thoughtSignature || cachedSig || getThoughtSignatureForModel(actualModelName);
-      const reasoningText = (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0) ? message.reasoning_content : ' ';
-      parts.push({ text: reasoningText, thought: true });
-      parts.push({ text: ' ', thoughtSignature });
-    }
-    if (hasContent) parts.push({ text: message.content.trimEnd() });
-    parts.push(...antigravityTools);
-    antigravityMessages.push({ role: 'model', parts });
+  const parts = [];
+  if (enableThinking) {
+    const reasoningText = (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0)
+      ? message.reasoning_content : ' ';
+    parts.push(createThoughtPart(reasoningText, message.thoughtSignature || reasoningSignature));
   }
+  if (hasContent) parts.push({ text: message.content.trimEnd() });
+
+  pushModelMessage({ parts, toolCalls, hasContent }, antigravityMessages);
 }
 
 function handleToolCall(message, antigravityMessages) {
-  let functionName = '';
-  for (let i = antigravityMessages.length - 1; i >= 0; i--) {
-    if (antigravityMessages[i].role === 'model') {
-      const parts = antigravityMessages[i].parts;
-      for (const part of parts) {
-        if (part.functionCall && part.functionCall.id === message.tool_call_id) {
-          functionName = part.functionCall.name;
-          break;
-        }
-      }
-      if (functionName) break;
-    }
-  }
-
-  const lastMessage = antigravityMessages[antigravityMessages.length - 1];
-  const functionResponse = {
-    functionResponse: {
-      id: message.tool_call_id,
-      name: functionName,
-      response: { output: message.content }
-    }
-  };
-
-  if (lastMessage?.role === 'user' && lastMessage.parts.some(p => p.functionResponse)) {
-    lastMessage.parts.push(functionResponse);
-  } else {
-    antigravityMessages.push({ role: 'user', parts: [functionResponse] });
-  }
+  const functionName = findFunctionNameById(message.tool_call_id, antigravityMessages);
+  pushFunctionResponse(message.tool_call_id, functionName, message.content, antigravityMessages);
 }
 
 function openaiMessageToAntigravity(openaiMessages, enableThinking, actualModelName, sessionId) {
@@ -119,7 +78,7 @@ function openaiMessageToAntigravity(openaiMessages, enableThinking, actualModelN
   for (const message of openaiMessages) {
     if (message.role === 'user' || message.role === 'system') {
       const extracted = extractImagesFromContent(message.content);
-      handleUserMessage(extracted, antigravityMessages);
+      pushUserMessage(extracted, antigravityMessages);
     } else if (message.role === 'assistant') {
       handleAssistantMessage(message, antigravityMessages, enableThinking, actualModelName, sessionId);
     } else if (message.role === 'tool') {
@@ -129,34 +88,11 @@ function openaiMessageToAntigravity(openaiMessages, enableThinking, actualModelN
   return antigravityMessages;
 }
 
-function convertOpenAIToolsToAntigravity(openaiTools, sessionId, actualModelName) {
-  if (!openaiTools || openaiTools.length === 0) return [];
-  return openaiTools.map((tool) => {
-    const rawParams = tool.function?.parameters || {};
-    const cleanedParams = cleanParameters(rawParams) || {};
-    if (cleanedParams.type === undefined) cleanedParams.type = 'object';
-    if (cleanedParams.type === 'object' && cleanedParams.properties === undefined) cleanedParams.properties = {};
-
-    const originalName = tool.function?.name;
-    const safeName = sanitizeToolName(originalName);
-    if (sessionId && actualModelName && safeName !== originalName) {
-      setToolNameMapping(sessionId, actualModelName, safeName, originalName);
-    }
-
-    return {
-      functionDeclarations: [{
-        name: safeName,
-        description: tool.function.description,
-        parameters: cleanedParams
-      }]
-    };
-  });
-}
-
 export function generateRequestBody(openaiMessages, modelName, parameters, openaiTools, token) {
   const enableThinking = isEnableThinking(modelName);
   const actualModelName = modelMapping(modelName);
   const mergedSystemInstruction = extractSystemInstruction(openaiMessages);
+  
   let filteredMessages = openaiMessages;
   let startIndex = 0;
   if (config.useContextSystemPrompt) {
@@ -170,26 +106,11 @@ export function generateRequestBody(openaiMessages, modelName, parameters, opena
     }
   }
 
-  const requestBody = {
-    project: token.projectId,
-    requestId: generateRequestId(),
-    request: {
-      contents: openaiMessageToAntigravity(filteredMessages, enableThinking, actualModelName, token.sessionId),
-      tools: convertOpenAIToolsToAntigravity(openaiTools, token.sessionId, actualModelName),
-      toolConfig: { functionCallingConfig: { mode: 'VALIDATED' } },
-      generationConfig: generateGenerationConfig(parameters, enableThinking, actualModelName),
-      sessionId: token.sessionId
-    },
-    model: actualModelName,
-    userAgent: 'antigravity'
-  };
-
-  if (mergedSystemInstruction) {
-    requestBody.request.systemInstruction = {
-      role: 'user',
-      parts: [{ text: mergedSystemInstruction }]
-    };
-  }
-
-  return requestBody;
+  return buildRequestBody({
+    contents: openaiMessageToAntigravity(filteredMessages, enableThinking, actualModelName, token.sessionId),
+    tools: convertOpenAIToolsToAntigravity(openaiTools, token.sessionId, actualModelName),
+    generationConfig: generateGenerationConfig(parameters, enableThinking, actualModelName),
+    sessionId: token.sessionId,
+    systemInstruction: mergedSystemInstruction
+  }, token, actualModelName);
 }

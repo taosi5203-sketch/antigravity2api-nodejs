@@ -1,26 +1,41 @@
 /**
  * 智能内存管理器
  * 采用分级策略，根据内存压力动态调整缓存和对象池
- * 目标：在保证性能的前提下，将内存稳定在 20MB 左右
+ * 阈值基于用户配置的 memoryThreshold（MB）动态计算
  * @module utils/memoryManager
  */
 
 import logger from './logger.js';
-import { MEMORY_THRESHOLDS, GC_COOLDOWN } from '../constants/index.js';
+import { GC_COOLDOWN } from '../constants/index.js';
 
 /**
  * 内存压力级别枚举
  * @enum {string}
  */
 const MemoryPressure = {
-  LOW: 'low',       // < 15MB - 正常运行
-  MEDIUM: 'medium', // 15-25MB - 轻度清理
-  HIGH: 'high',     // 25-35MB - 积极清理
-  CRITICAL: 'critical' // > 35MB - 紧急清理
+  LOW: 'low',       // < 30% 阈值 - 正常运行
+  MEDIUM: 'medium', // 30%-60% 阈值 - 轻度清理
+  HIGH: 'high',     // 60%-100% 阈值 - 积极清理
+  CRITICAL: 'critical' // > 100% 阈值 - 紧急清理
 };
 
-// 使用导入的常量
-const THRESHOLDS = MEMORY_THRESHOLDS;
+/**
+ * 根据用户配置的内存阈值计算各级别阈值
+ * @param {number} thresholdMB - 用户配置的内存阈值（MB），即高压力阈值
+ * @returns {Object} 各级别阈值（字节）
+ */
+function calculateThresholds(thresholdMB) {
+  const highBytes = thresholdMB * 1024 * 1024;
+  return {
+    LOW: Math.floor(highBytes * 0.3),      // 30% 为低压力阈值
+    MEDIUM: Math.floor(highBytes * 0.6),   // 60% 为中等压力阈值
+    HIGH: highBytes,                        // 100% 为高压力阈值（用户配置值）
+    TARGET: Math.floor(highBytes * 0.5)    // 50% 为目标内存
+  };
+}
+
+// 默认阈值（100MB），会在初始化时被配置覆盖
+let THRESHOLDS = calculateThresholds(100);
 
 // 对象池最大大小配置（根据压力调整）
 const POOL_SIZES = {
@@ -45,12 +60,39 @@ class MemoryManager {
     this.gcCooldown = GC_COOLDOWN;
     this.checkInterval = null;
     this.isShuttingDown = false;
+    /** @type {number} 用户配置的内存阈值（MB） */
+    this.configuredThresholdMB = 100;
     
     // 统计信息
     this.stats = {
       gcCount: 0,
       cleanupCount: 0,
       peakMemory: 0
+    };
+  }
+
+  /**
+   * 设置内存阈值（从配置加载）
+   * @param {number} thresholdMB - 内存阈值（MB）
+   */
+  setThreshold(thresholdMB) {
+    if (thresholdMB && thresholdMB > 0) {
+      this.configuredThresholdMB = thresholdMB;
+      THRESHOLDS = calculateThresholds(thresholdMB);
+      logger.info(`内存阈值已设置: ${thresholdMB}MB (LOW: ${Math.floor(THRESHOLDS.LOW/1024/1024)}MB, MEDIUM: ${Math.floor(THRESHOLDS.MEDIUM/1024/1024)}MB, HIGH: ${Math.floor(THRESHOLDS.HIGH/1024/1024)}MB)`);
+    }
+  }
+
+  /**
+   * 获取当前阈值配置
+   */
+  getThresholds() {
+    return {
+      configuredMB: this.configuredThresholdMB,
+      lowMB: Math.floor(THRESHOLDS.LOW / 1024 / 1024),
+      mediumMB: Math.floor(THRESHOLDS.MEDIUM / 1024 / 1024),
+      highMB: Math.floor(THRESHOLDS.HIGH / 1024 / 1024),
+      targetMB: Math.floor(THRESHOLDS.TARGET / 1024 / 1024)
     };
   }
 
@@ -264,7 +306,8 @@ class MemoryManager {
       currentPressure: this.currentPressure,
       currentHeapMB: memory.heapUsedMB,
       peakMemoryMB: Math.round(this.stats.peakMemory / 1024 / 1024 * 10) / 10,
-      poolSizes: this.getPoolSizes()
+      poolSizes: this.getPoolSizes(),
+      thresholds: this.getThresholds()
     };
   }
 }

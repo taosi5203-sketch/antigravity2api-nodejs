@@ -2,6 +2,7 @@
 import config from '../config/config.js';
 import os from 'os';
 import { REASONING_EFFORT_MAP, DEFAULT_STOP_SEQUENCES } from '../constants/index.js';
+import { toGenerationConfig } from './parameterNormalizer.js';
 
 // ==================== 签名常量 ====================
 const CLAUDE_THOUGHT_SIGNATURE = 'RXFRRENrZ0lDaEFDR0FJcVFKV1Bvcy9GV20wSmtMV2FmWkFEbGF1ZTZzQTdRcFlTc1NvbklmemtSNFo4c1dqeitIRHBOYW9hS2NYTE1TeTF3bjh2T1RHdE1KVjVuYUNQclZ5cm9DMFNETHk4M0hOSWsrTG1aRUhNZ3hvTTl0ZEpXUDl6UUMzOExxc2ZJakI0UkkxWE1mdWJ1VDQrZnY0Znp0VEoyTlhtMjZKL2daYi9HL1gwcmR4b2x0VE54empLemtLcEp0ZXRia2plb3NBcWlRSWlXUHloMGhVVTk1dHNha1dyNDVWNUo3MTJjZDNxdHQ5Z0dkbjdFaFk4dUllUC9CcThVY2VZZC9YbFpYbDc2bHpEbmdzL2lDZXlNY3NuZXdQMjZBTDRaQzJReXdibVQzbXlSZmpld3ZSaUxxOWR1TVNidHIxYXRtYTJ0U1JIRjI0Z0JwUnpadE1RTmoyMjR4bTZVNUdRNXlOSWVzUXNFNmJzRGNSV0RTMGFVOEZERExybmhVQWZQT2JYMG5lTGR1QnU1VGZOWW9NZglRbTgyUHVqVE1xaTlmN0t2QmJEUUdCeXdyVXR2eUNnTEFHNHNqeWluZDRCOEg3N2ZJamt5blI3Q3ZpQzlIOTVxSENVTCt3K3JzMmsvV0sxNlVsbGlTK0pET3UxWXpPMWRPOUp3V3hEMHd5ZVU0a0Y5MjIxaUE5Z2lUd2djZXhSU2c4TWJVMm1NSjJlaGdlY3g0YjJ3QloxR0FFPQ==';
@@ -71,33 +72,19 @@ export function isEnableThinking(modelName) {
 
 // ==================== 生成配置 ====================
 export function generateGenerationConfig(parameters, enableThinking, actualModelName) {
-  const defaultThinkingBudget = config.defaults.thinking_budget ?? 1024;
-  let thinkingBudget = 0;
-  if (enableThinking) {
-    if (parameters.thinking_budget !== undefined) {
-      thinkingBudget = parameters.thinking_budget;
-    } else if (parameters.reasoning_effort !== undefined) {
-      thinkingBudget = REASONING_EFFORT_MAP[parameters.reasoning_effort] ?? defaultThinkingBudget;
-    } else {
-      thinkingBudget = defaultThinkingBudget;
-    }
+  // 处理 reasoning_effort 到 thinking_budget 的转换
+  const normalizedParams = { ...parameters };
+  if (normalizedParams.thinking_budget === undefined && normalizedParams.reasoning_effort !== undefined) {
+    const defaultThinkingBudget = config.defaults.thinking_budget ?? 1024;
+    normalizedParams.thinking_budget = REASONING_EFFORT_MAP[normalizedParams.reasoning_effort] ?? defaultThinkingBudget;
   }
-
-  const generationConfig = {
-    topP: parameters.top_p ?? config.defaults.top_p,
-    topK: parameters.top_k ?? config.defaults.top_k,
-    temperature: parameters.temperature ?? config.defaults.temperature,
-    candidateCount: 1,
-    maxOutputTokens: parameters.max_tokens ?? config.defaults.max_tokens,
-    stopSequences: DEFAULT_STOP_SEQUENCES,
-    thinkingConfig: {
-      includeThoughts: enableThinking,
-      thinkingBudget: thinkingBudget
-    }
-  };
-  if (enableThinking && actualModelName.includes('claude')) {
-    delete generationConfig.topP;
-  }
+  
+  // 使用统一的参数转换函数
+  const generationConfig = toGenerationConfig(normalizedParams, enableThinking, actualModelName);
+  
+  // 添加 stopSequences
+  generationConfig.stopSequences = DEFAULT_STOP_SEQUENCES;
+  
   return generationConfig;
 }
 

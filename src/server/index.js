@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { generateAssistantResponse, generateAssistantResponseNoStream, getAvailableModels, generateImageForSD, closeRequester } from '../api/client.js';
 import { generateRequestBody, generateGeminiRequestBody, generateClaudeRequestBody, prepareImageRequest } from '../utils/utils.js';
+import { normalizeClaudeParameters } from '../utils/parameterNormalizer.js';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
 import tokenManager from '../auth/token_manager.js';
@@ -28,7 +29,8 @@ const with429Retry = async (fn, maxRetries, loggerPrefix = '') => {
     try {
       return await fn(attempt);
     } catch (error) {
-      const status = Number(error.status || error.response?.status);
+      // 兼容多种错误格式：error.status, error.statusCode, error.response?.status
+      const status = Number(error.status || error.statusCode || error.response?.status);
       if (status === 429 && attempt < retries) {
         const nextAttempt = attempt + 1;
         logger.warn(`${loggerPrefix}收到 429，正在进行第 ${nextAttempt} 次重试（共 ${retries} 次）`);
@@ -92,7 +94,8 @@ const releaseChunkObject = (obj) => {
 // 注册内存清理回调（使用统一工具收缩对象池）
 registerMemoryPoolCleanup(chunkPool, () => memoryManager.getPoolSizes().chunk);
 
-// 启动内存管理器
+// 设置内存阈值（从配置加载）并启动内存管理器
+memoryManager.setThreshold(config.server.memoryThreshold);
 memoryManager.start(MEMORY_CHECK_INTERVAL);
 
 const createStreamChunk = (id, created, model, delta, finish_reason = null) => {
@@ -143,10 +146,14 @@ const buildGeminiErrorPayload = (error, statusCode) => {
 };
 
 // Gemini 响应构建工具
-const createGeminiResponse = (content, reasoning, toolCalls, finishReason, usage) => {
+const createGeminiResponse = (content, reasoning, reasoningSignature, toolCalls, finishReason, usage) => {
   const parts = [];
   if (reasoning) {
-    parts.push({ text: reasoning, thought: true });
+    const thoughtPart = { text: reasoning, thought: true };
+    if (reasoningSignature && config.passSignatureToClient) {
+      thoughtPart.thoughtSignature = reasoningSignature;
+    }
+    parts.push(thoughtPart);
   }
   if (content) {
     parts.push({ text: content });
@@ -154,12 +161,16 @@ const createGeminiResponse = (content, reasoning, toolCalls, finishReason, usage
   if (toolCalls && toolCalls.length > 0) {
     toolCalls.forEach(tc => {
       try {
-        parts.push({
+        const functionCallPart = {
           functionCall: {
             name: tc.function.name,
             args: JSON.parse(tc.function.arguments)
           }
-        });
+        };
+        if (tc.thoughtSignature && config.passSignatureToClient) {
+          functionCallPart.thoughtSignature = tc.thoughtSignature;
+        }
+        parts.push(functionCallPart);
       } catch (e) {
         // 忽略解析错误
       }
@@ -454,6 +465,9 @@ app.get('/v1beta/models/:model', async (req, res) => {
 });
 
 const handleGeminiRequest = async (req, res, modelName, isStream) => {
+  const maxRetries = Number(config.retryTimes || 0);
+  const safeRetries = maxRetries > 0 ? Math.floor(maxRetries) : 0;
+  
   try {
     const token = await tokenManager.getToken();
     if (!token) {
@@ -461,8 +475,6 @@ const handleGeminiRequest = async (req, res, modelName, isStream) => {
     }
 
     const requestBody = generateGeminiRequestBody(req.body, modelName, token);
-    const maxRetries = Number(config.retryTimes || 0);
-    const safeRetries = maxRetries > 0 ? Math.floor(maxRetries) : 0;
 
     if (isStream) {
       setStreamHeaders(res);
@@ -478,16 +490,16 @@ const handleGeminiRequest = async (req, res, modelName, isStream) => {
               usageData = data.usage;
             } else if (data.type === 'reasoning') {
               // Gemini 思考内容
-              const chunk = createGeminiResponse(null, data.reasoning_content, null, null, null);
+              const chunk = createGeminiResponse(null, data.reasoning_content, data.thoughtSignature, null, null, null);
               writeStreamData(res, chunk);
             } else if (data.type === 'tool_calls') {
               hasToolCall = true;
               // Gemini 工具调用
-              const chunk = createGeminiResponse(null, null, data.tool_calls, null, null);
+              const chunk = createGeminiResponse(null, null, null, data.tool_calls, null, null);
               writeStreamData(res, chunk);
             } else {
               // 普通文本
-              const chunk = createGeminiResponse(data.content, null, null, null, null);
+              const chunk = createGeminiResponse(data.content, null, null, null, null, null);
               writeStreamData(res, chunk);
             }
           }),
@@ -497,28 +509,36 @@ const handleGeminiRequest = async (req, res, modelName, isStream) => {
 
         // 发送结束块和 usage
         const finishReason = hasToolCall ? "STOP" : "STOP"; // Gemini 工具调用也是 STOP
-        const finalChunk = createGeminiResponse(null, null, null, finishReason, usageData);
+        const finalChunk = createGeminiResponse(null, null, null, null, finishReason, usageData);
         writeStreamData(res, finalChunk);
 
         clearInterval(heartbeatTimer);
         endStream(res);
       } catch (error) {
         clearInterval(heartbeatTimer);
-        throw error;
+        // 流式响应中发送错误
+        if (!res.writableEnded) {
+          const statusCode = Number(error.status) || 500;
+          const errorPayload = buildGeminiErrorPayload(error, statusCode);
+          writeStreamData(res, errorPayload);
+          endStream(res);
+        }
+        logger.error('Gemini 流式请求失败:', error.message);
+        return;
       }
     } else {
       // 非流式
       req.setTimeout(0);
       res.setTimeout(0);
 
-      const { content, reasoningContent, toolCalls, usage } = await with429Retry(
+      const { content, reasoningContent, reasoningSignature, toolCalls, usage } = await with429Retry(
         () => generateAssistantResponseNoStream(requestBody, token),
         safeRetries,
         'gemini.no_stream '
       );
 
       const finishReason = toolCalls.length > 0 ? "STOP" : "STOP";
-      const response = createGeminiResponse(content, reasoningContent, toolCalls, finishReason, usage);
+      const response = createGeminiResponse(content, reasoningContent, reasoningSignature, toolCalls, finishReason, usage);
       res.json(response);
     }
   } catch (error) {
@@ -572,15 +592,19 @@ const createClaudeStreamEvent = (eventType, data) => {
 };
 
 // Claude 非流式响应构建
-const createClaudeResponse = (id, model, content, reasoning, toolCalls, stopReason, usage) => {
+const createClaudeResponse = (id, model, content, reasoning, reasoningSignature, toolCalls, stopReason, usage) => {
   const contentBlocks = [];
   
   // 思维链内容（如果有）- Claude 格式用 thinking 类型
   if (reasoning) {
-    contentBlocks.push({
+    const thinkingBlock = {
       type: "thinking",
       thinking: reasoning
-    });
+    };
+    if (reasoningSignature && config.passSignatureToClient) {
+      thinkingBlock.signature = reasoningSignature;
+    }
+    contentBlocks.push(thinkingBlock);
   }
   
   // 文本内容
@@ -595,12 +619,16 @@ const createClaudeResponse = (id, model, content, reasoning, toolCalls, stopReas
   if (toolCalls && toolCalls.length > 0) {
     for (const tc of toolCalls) {
       try {
-        contentBlocks.push({
+        const toolBlock = {
           type: "tool_use",
           id: tc.id,
           name: tc.function.name,
           input: JSON.parse(tc.function.arguments)
-        });
+        };
+        if (tc.thoughtSignature && config.passSignatureToClient) {
+          toolBlock.signature = tc.thoughtSignature;
+        }
+        contentBlocks.push(toolBlock);
       } catch (e) {
         // 解析失败时传入空对象
         contentBlocks.push({
@@ -630,7 +658,7 @@ const createClaudeResponse = (id, model, content, reasoning, toolCalls, stopReas
 
 // Claude API 处理函数
 const handleClaudeRequest = async (req, res, isStream) => {
-  const { messages, model, system, tools, max_tokens, temperature, top_p, top_k, ...otherParams } = req.body;
+  const { messages, model, system, tools, ...rawParams } = req.body;
   
   try {
     if (!messages) {
@@ -642,14 +670,8 @@ const handleClaudeRequest = async (req, res, isStream) => {
       throw new Error('没有可用的token，请运行 npm run login 获取token');
     }
     
-    // 构建参数
-    const parameters = {
-      max_tokens: max_tokens || config.defaults.max_tokens,
-      temperature: temperature ?? config.defaults.temperature,
-      top_p: top_p ?? config.defaults.top_p,
-      top_k: top_k ?? config.defaults.top_k,
-      ...otherParams
-    };
+    // 使用统一参数规范化模块处理 Claude 格式参数
+    const parameters = normalizeClaudeParameters(rawParams);
     
     const requestBody = generateClaudeRequestBody(messages, model, parameters, tools, system, token);
     
@@ -691,19 +713,27 @@ const handleClaudeRequest = async (req, res, isStream) => {
               // 思维链内容 - 使用 thinking 类型
               if (!reasoningSent) {
                 // 开始思维块
+                const contentBlock = { type: "thinking", thinking: "" };
+                if (data.thoughtSignature && config.passSignatureToClient) {
+                  contentBlock.signature = data.thoughtSignature;
+                }
                 res.write(createClaudeStreamEvent('content_block_start', {
                   type: "content_block_start",
                   index: contentIndex,
-                  content_block: { type: "thinking", thinking: "" }
+                  content_block: contentBlock
                 }));
                 currentBlockType = 'thinking';
                 reasoningSent = true;
               }
               // 发送思维增量
+              const delta = { type: "thinking_delta", thinking: data.reasoning_content || '' };
+              if (data.thoughtSignature && config.passSignatureToClient) {
+                delta.signature = data.thoughtSignature;
+              }
               res.write(createClaudeStreamEvent('content_block_delta', {
                 type: "content_block_delta",
                 index: contentIndex,
-                delta: { type: "thinking_delta", thinking: data.reasoning_content || '' }
+                delta: delta
               }));
             } else if (data.type === 'tool_calls') {
               hasToolCall = true;
@@ -719,10 +749,14 @@ const handleClaudeRequest = async (req, res, isStream) => {
               for (const tc of data.tool_calls) {
                 try {
                   const inputObj = JSON.parse(tc.function.arguments);
+                  const toolContentBlock = { type: "tool_use", id: tc.id, name: tc.function.name, input: {} };
+                  if (tc.thoughtSignature && config.passSignatureToClient) {
+                    toolContentBlock.signature = tc.thoughtSignature;
+                  }
                   res.write(createClaudeStreamEvent('content_block_start', {
                     type: "content_block_start",
                     index: contentIndex,
-                    content_block: { type: "tool_use", id: tc.id, name: tc.function.name, input: {} }
+                    content_block: toolContentBlock
                   }));
                   // 发送 input 增量
                   res.write(createClaudeStreamEvent('content_block_delta', {
@@ -797,14 +831,22 @@ const handleClaudeRequest = async (req, res, isStream) => {
         res.end();
       } catch (error) {
         clearInterval(heartbeatTimer);
-        throw error;
+        // 流式响应中发送错误事件
+        if (!res.writableEnded) {
+          const statusCode = Number(error.status) || 500;
+          const errorPayload = buildClaudeErrorPayload(error, statusCode);
+          res.write(createClaudeStreamEvent('error', errorPayload));
+          res.end();
+        }
+        logger.error('Claude 流式请求失败:', error.message);
+        return;
       }
     } else {
       // 非流式请求
       req.setTimeout(0);
       res.setTimeout(0);
       
-      const { content, reasoningContent, toolCalls, usage } = await with429Retry(
+      const { content, reasoningContent, reasoningSignature, toolCalls, usage } = await with429Retry(
         () => generateAssistantResponseNoStream(requestBody, token),
         safeRetries,
         'claude.no_stream '
@@ -816,6 +858,7 @@ const handleClaudeRequest = async (req, res, isStream) => {
         model,
         content,
         reasoningContent,
+        reasoningSignature,
         toolCalls,
         stopReason,
         usage

@@ -37,19 +37,12 @@ export const MODEL_LIST_CACHE_TTL = 60 * 60 * 1000;
 
 // ==================== 内存管理常量 ====================
 
-/**
- * 内存压力阈值（字节）
- */
-export const MEMORY_THRESHOLDS = {
-  /** 低压力阈值 - 15MB */
-  LOW: 15 * 1024 * 1024,
-  /** 中等压力阈值 - 25MB */
-  MEDIUM: 25 * 1024 * 1024,
-  /** 高压力阈值 - 35MB */
-  HIGH: 35 * 1024 * 1024,
-  /** 目标内存 - 20MB */
-  TARGET: 20 * 1024 * 1024
-};
+// 注意：内存压力阈值现在由 memoryManager 根据用户配置的 memoryThreshold 动态计算
+// 用户配置的 memoryThreshold（MB）即为高压力阈值，其他阈值按比例计算：
+// - LOW: 30% 阈值
+// - MEDIUM: 60% 阈值
+// - HIGH: 100% 阈值（用户配置值）
+// - TARGET: 50% 阈值
 
 /**
  * GC 冷却时间（毫秒）
