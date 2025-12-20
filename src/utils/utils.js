@@ -72,13 +72,21 @@ export function isEnableThinking(modelName) {
 
 // ==================== 生成配置 ====================
 export function generateGenerationConfig(parameters, enableThinking, actualModelName) {
+  // 使用 config.defaults 兜底
+  const normalizedParams = {
+    temperature: parameters.temperature ?? config.defaults.temperature,
+    top_p: parameters.top_p ?? config.defaults.top_p,
+    top_k: parameters.top_k ?? config.defaults.top_k,
+    max_tokens: parameters.max_tokens ?? config.defaults.max_tokens,
+    thinking_budget: parameters.thinking_budget,
+  };
+
   // 处理 reasoning_effort 到 thinking_budget 的转换
-  const normalizedParams = { ...parameters };
-  if (normalizedParams.thinking_budget === undefined && normalizedParams.reasoning_effort !== undefined) {
+  if (normalizedParams.thinking_budget === undefined && parameters.reasoning_effort !== undefined) {
     const defaultThinkingBudget = config.defaults.thinking_budget ?? 1024;
-    normalizedParams.thinking_budget = REASONING_EFFORT_MAP[normalizedParams.reasoning_effort] ?? defaultThinkingBudget;
+    normalizedParams.thinking_budget = REASONING_EFFORT_MAP[parameters.reasoning_effort] ?? defaultThinkingBudget;
   }
-  
+
   // 使用统一的参数转换函数
   const generationConfig = toGenerationConfig(normalizedParams, enableThinking, actualModelName);
   
