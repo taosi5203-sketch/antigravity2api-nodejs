@@ -63,7 +63,12 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
       ? message.reasoning_content : ' ';
     parts.push(createThoughtPart(reasoningText));
   }
-  if (hasContent) parts.push({ text: message.content.trimEnd(), thoughtSignature: message.thoughtSignature || reasoningSignature });
+  if (hasContent) {
+    const part = { text: message.content.trimEnd() };
+    const signature = message.thoughtSignature || reasoningSignature;
+    if (signature) part.thoughtSignature = signature;
+    parts.push(part);
+  }
   if (!enableThinking && parts[0]) delete parts[0].thoughtSignature;
 
   pushModelMessage({ parts, toolCalls, hasContent }, antigravityMessages);

@@ -10,7 +10,7 @@ const toolSignatureByModel = new Map();
 
 // 正常情况下允许的最大条目数（低压力时）
 // 只按 model 缓存，模型数量一般很少；仍加一个上限防止异常输入导致增长
-const MAX_MODEL_ENTRIES = 64;
+const MAX_MODEL_ENTRIES = 16;
 
 // 过期时间与定时清理间隔（毫秒）
 const ENTRY_TTL_MS = 30 * 60 * 1000;      // 30 分钟

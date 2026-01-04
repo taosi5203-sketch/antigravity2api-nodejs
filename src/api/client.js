@@ -403,15 +403,22 @@ export async function generateAssistantResponseNoStream(requestBody, token) {
     total_tokens: usage.totalTokenCount || 0
   } : null;
   
-  // 将新的签名写入全局缓存（按 sessionId + model），供后续请求兜底使用
+  // 将新的签名写入全局缓存（按 model），供后续请求兜底使用
   const sessionId = requestBody.request?.sessionId;
   const model = requestBody.model;
-  if (sessionId && model) {
+  if (config.useCachedSignature && sessionId && model) {
     if (reasoningSignature) {
       setReasoningSignature(sessionId, model, reasoningSignature);
     }
-    // 工具签名：取第一个带 thoughtSignature 的工具作为缓存源
-    const toolSig = toolCalls.find(tc => tc.thoughtSignature)?.thoughtSignature;
+    // 工具签名：取最后一个带 thoughtSignature 的工具作为缓存源（更接近“最新”）
+    let toolSig = null;
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      const sig = toolCalls[i]?.thoughtSignature;
+      if (sig) {
+        toolSig = sig;
+        break;
+      }
+    }
     if (toolSig) {
       setToolSignature(sessionId, model, toolSig);
     }

@@ -2,6 +2,7 @@ import memoryManager, { registerMemoryPoolCleanup } from '../utils/memoryManager
 import { generateToolCallId } from '../utils/idGenerator.js';
 import { setReasoningSignature, setToolSignature } from '../utils/thoughtSignatureCache.js';
 import { getOriginalToolName } from '../utils/toolNameCache.js';
+import config from '../config/config.js';
 
 // 预编译的常量（避免重复创建字符串）
 const DATA_PREFIX = 'data: ';
@@ -76,8 +77,8 @@ function convertToToolCall(functionCall, sessionId, model) {
   const toolCall = getToolCallObject();
   toolCall.id = functionCall.id || generateToolCallId();
   let name = functionCall.name;
-  if (sessionId && model) {
-    const original = getOriginalToolName(sessionId, model, functionCall.name);
+  if (model) {
+    const original = getOriginalToolName(model, functionCall.name);
     if (original) name = original;
   }
   toolCall.function.name = name;
@@ -102,7 +103,9 @@ function parseAndEmitStreamChunk(line, state, callback) {
             state.reasoningSignature = part.thoughtSignature;
             if (state.sessionId && state.model) {
               //console.log("服务器传入的签名："+state.reasoningSignature);
-              setReasoningSignature(state.sessionId, state.model, part.thoughtSignature);
+              if (config.useCachedSignature) {
+                setReasoningSignature(state.sessionId, state.model, part.thoughtSignature);
+              }
             }
           }
           callback({
@@ -117,7 +120,9 @@ function parseAndEmitStreamChunk(line, state, callback) {
           if (part.thoughtSignature) {
             toolCall.thoughtSignature = part.thoughtSignature;
             if (state.sessionId && state.model) {
-              setToolSignature(state.sessionId, state.model, part.thoughtSignature);
+              if (config.useCachedSignature) {
+                setToolSignature(state.sessionId, state.model, part.thoughtSignature);
+              }
             }
           }
           state.toolCalls.push(toolCall);

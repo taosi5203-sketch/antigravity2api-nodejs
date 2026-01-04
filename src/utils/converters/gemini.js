@@ -75,7 +75,9 @@ function processModelThoughts(content, reasoningSignature, toolSignature) {
     parts[thoughtIndex].thoughtSignature = signatureValue;
     parts.splice(signatureIndex, 1);
   } else if (thoughtIndex !== -1 && signatureIndex === -1) {
-    parts[thoughtIndex].thoughtSignature = reasoningSignature;
+    if (reasoningSignature) {
+      parts[thoughtIndex].thoughtSignature = reasoningSignature;
+    }
   } else if (thoughtIndex === -1) {
     parts.unshift(createThoughtPart(' ', reasoningSignature));
   }
@@ -98,7 +100,9 @@ function processModelThoughts(content, reasoningSignature, toolSignature) {
         part.thoughtSignature = standaloneSignatures[sigIndex].signature;
         sigIndex++;
       } else {
-        part.thoughtSignature = toolSignature;
+        if (toolSignature) {
+          part.thoughtSignature = toolSignature;
+        }
       }
     }
   }
