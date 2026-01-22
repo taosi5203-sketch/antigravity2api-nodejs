@@ -244,6 +244,16 @@ try {
           console.warn(`  ⚠ Warning: bin/${binFile} not found`);
         }
       }
+    // 复制 tls_config.json
+    const configFile = 'tls_config.json';
+    const configSrcPath = path.join(binSrcDir, configFile);
+    const configDestPath = path.join(binDestDir, configFile);
+    if (fs.existsSync(configSrcPath)) {
+      fs.copyFileSync(configSrcPath, configDestPath);
+      console.log(`  ✓ Copied bin/${configFile}`);
+} else {
+  console.warn(`  ⚠ Warning: bin/${configFile} not found`);
+}
     } else {
       // 如果没有映射，复制所有文件（兼容旧行为）
       try {
